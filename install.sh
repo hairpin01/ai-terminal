@@ -57,8 +57,6 @@ check_permissions() {
 check_dependencies() {
     print_step "Проверка зависимостей..."
     
-    local missing_deps=()
-    
     # Проверяем Python
     if ! command -v python3 &> /dev/null; then
         print_error "Python3 не установлен"
@@ -113,9 +111,7 @@ install_python_packages() {
         print_success "openai уже установлен"
     else
         print_info "Устанавливаю openai..."
-        pip3 install openai
-        
-        if python3 -c "import openai" &> /dev/null; then
+        if pip3 install openai; then
             print_success "openai установлен"
         else
             print_error "Не удалось установить openai"
@@ -158,16 +154,20 @@ install_script() {
     print_step "Установка скрипта в систему..."
     
     # Делаем скрипт исполняемым
-    chmod +x "$script_path"
+    if ! chmod +x "$script_path"; then
+        print_error "Ошибка при установке прав на скрипт"
+        rm -rf "$(dirname "$script_path")"
+        exit 1
+    fi
     
     # Копируем в системную директорию
-    if sudo cp "$script_path" "$INSTALL_DIR/"; then
-        print_success "Скрипт установлен в $INSTALL_DIR/"
-    else
+    if ! sudo cp "$script_path" "$INSTALL_DIR/"; then
         print_error "Ошибка при копировании скрипта"
         rm -rf "$(dirname "$script_path")"
         exit 1
     fi
+    
+    print_success "Скрипт установлен в $INSTALL_DIR/"
     
     # Очищаем временные файлы
     rm -rf "$(dirname "$script_path")"
@@ -191,6 +191,8 @@ system_prompt = You are a helpful AI assistant. Provide clear and concise answer
 temperature = 0.7
 max_tokens = 1024
 memory_depth = 5
+typing_effect = true
+typing_speed = 0.01
 EOF
         print_success "Конфиг создан: $CONFIG_FILE"
     else
@@ -204,14 +206,16 @@ verify_installation() {
     
     if command -v "$SCRIPT_NAME" &> /dev/null; then
         print_success "AI-ассистент успешно установлен!"
+        return 0
     else
-        print_error "Ошибка при установке"
-        exit 1
+        print_error "AI-ассистент не найден в PATH"
+        return 1
     fi
 }
 
 # Показ инструкции
 show_instructions() {
+    echo
     echo -e "${GREEN}"
     echo "┌──────────────────────────────────────────────────┐"
     echo "│              🎉 УСТАНОВКА ЗАВЕРШЕНА!            │"
@@ -247,10 +251,21 @@ main() {
     local script_path
     script_path=$(download_script)
     
+    # Проверяем что путь корректен
+    if [[ ! -f "$script_path" ]]; then
+        print_error "Скачанный файл не найден по пути: $script_path"
+        exit 1
+    fi
+    
     install_script "$script_path"
     create_config
-    verify_installation
-    show_instructions
+    
+    if verify_installation; then
+        show_instructions
+    else
+        print_error "Установка завершена с ошибками"
+        exit 1
+    fi
 }
 
 # Обработка аргументов
