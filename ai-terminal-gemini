@@ -174,13 +174,10 @@ class AITerminal:
         """Остановка эффекта печати"""
         self._stop_typing = True
     
-    def _show_compact_loading(self, stop_event, question: str):
+    def _show_compact_loading(self, stop_event):
         """Компактная анимация загрузки"""
         frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         i = 0
-        
-        # Сначала выводим вопрос
-        print(f"➡️ {question}")
         
         while not stop_event.is_set():
             sys.stdout.write(f"\r🔄 {frames[i]} thinking...")
@@ -194,10 +191,9 @@ class AITerminal:
     
     def print_compact_response(self, question: str, answer: str):
         """Компактный вывод вопроса и ответа"""
-        # Вопрос
-        print(f"➡️ {question}")
-        
-        # Анимация загрузки (уже завершена к этому моменту)
+        # Вопрос (только для single_question режима)
+        if len(sys.argv) > 1:  # Если запущен с аргументами
+            print(f"➡️ {question}")
         
         # Ответ
         print("🔙 ", end="", flush=True)
@@ -267,9 +263,12 @@ class AITerminal:
                 elif not question:
                     continue
                 
+                # Показываем вопрос только один раз
+                print(f"➡️ {question}")
+                
                 # Компактная анимация загрузки
                 loading = threading.Event()
-                loading_thread = threading.Thread(target=self._show_compact_loading, args=(loading, question))
+                loading_thread = threading.Thread(target=self._show_compact_loading, args=(loading,))
                 loading_thread.start()
                 
                 answer = self.ask_ai(question)
@@ -280,7 +279,19 @@ class AITerminal:
                 if answer.startswith("❌"):
                     print(f"❌ {answer}")
                 else:
-                    self.print_compact_response(question, answer)
+                    # Выводим только ответ (без повторного вопроса)
+                    print("🔙 ", end="", flush=True)
+                    
+                    typing_enabled = self.config.getboolean('settings', 'typing_effect', fallback=True)
+                    typing_speed = self.config.getfloat('settings', 'typing_speed', fallback=0.01)
+                    
+                    if typing_enabled:
+                        self.type_effect(answer)
+                    else:
+                        print(answer)
+                    
+                    print()  # Пустая строка для разделения
+                    
                     self.add_to_history("user", question)
                     self.add_to_history("assistant", answer)
                     
@@ -293,9 +304,12 @@ class AITerminal:
     
     def single_question(self, question: str):
         """Режим одного вопроса"""
+        # Показываем вопрос
+        print(f"➡️ {question}")
+        
         # Компактная анимация загрузки
         loading = threading.Event()
-        loading_thread = threading.Thread(target=self._show_compact_loading, args=(loading, question))
+        loading_thread = threading.Thread(target=self._show_compact_loading, args=(loading,))
         loading_thread.start()
         
         answer = self.ask_ai(question)
@@ -307,7 +321,18 @@ class AITerminal:
             print(f"❌ {answer}")
             sys.exit(1)
         else:
-            self.print_compact_response(question, answer)
+            print("🔙 ", end="", flush=True)
+            
+            typing_enabled = self.config.getboolean('settings', 'typing_effect', fallback=True)
+            typing_speed = self.config.getfloat('settings', 'typing_speed', fallback=0.01)
+            
+            if typing_enabled:
+                self.type_effect(answer)
+            else:
+                print(answer)
+            
+            print()
+            
             self.add_to_history("user", question)
             self.add_to_history("assistant", answer)
 
