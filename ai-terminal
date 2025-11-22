@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+import os
+import sys
+import json
+import configparser
+from pathlib import Path
+import openai
+import readline  # Для истории ввода в интерактивном режиме
+
+class AITerminal:
+    def __init__(self):
+        self.config_dir = Path.home() / ".config"
+        self.config_file = self.config_dir / "ai-terminal.conf"
+        self.history_file = self.config_dir / "ai-terminal-history.json"
+        self.config = None
+        self.history = []
+        self.client = None
+        
+        self.setup_config()
+        self.setup_client()
+        self.load_history()
+    
+    def setup_config(self):
+        """Создание и загрузка конфигурации"""
+        if not self.config_file.exists():
+            self.create_default_config()
+            print(f"📁 Конфиг создан: {self.config_file}")
+            print("🔑 Пожалуйста, установите ваш API ключ в конфигурационном файле")
+            sys.exit(1)
+        
+        self.config = configparser.ConfigParser()
+        self.config.read(self.config_file)
+        
+        # Проверяем API ключ
+        api_key = self.config.get('api', 'api_key', fallback='YOUR_API_KEY_HERE')
+        if api_key == 'YOUR_API_KEY_HERE':
+            print("❌ Пожалуйста, установите ваш API ключ в конфигурационном файле")
+            sys.exit(1)
+    
+    def create_default_config(self):
+        """Создание конфигурационного файла по умолчанию"""
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        
+        config = configparser.ConfigParser()
+        config['api'] = {
+            'base_url': 'https://api.intelligence.io.solutions/api/v1/',
+            'api_key': 'YOUR_API_KEY_HERE',
+            'model_name': 'meta-llama/Llama-3.3-70B-Instruct'
+        }
+        config['settings'] = {
+            'system_prompt': 'You are a helpful AI assistant. Provide clear and concise answers in Russian. Be friendly and professional.',
+            'temperature': '0.7',
+            'max_tokens': '1024',
+            'memory_depth': '5'
+        }
+        
+        with open(self.config_file, 'w') as f:
+            config.write(f)
+    
+    def setup_client(self):
+        """Настройка клиента OpenAI"""
+        try:
+            self.client = openai.OpenAI(
+                api_key=self.config.get('api', 'api_key'),
+                base_url=self.config.get('api', 'base_url')
+            )
+        except Exception as e:
+            print(f"❌ Ошибка настройки клиента: {e}")
+            sys.exit(1)
+    
+    def load_history(self):
+        """Загрузка истории диалога"""
+        try:
+            if self.history_file.exists():
+                with open(self.history_file, 'r', encoding='utf-8') as f:
+                    self.history = json.load(f)
+            else:
+                self.history = []
+                self.save_history()
+        except Exception as e:
+            print(f"⚠️ Ошибка загрузки истории: {e}")
+            self.history = []
+    
+    def save_history(self):
+        """Сохранение истории диалога"""
+        try:
+            with open(self.history_file, 'w', encoding='utf-8') as f:
+                json.dump(self.history, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"⚠️ Ошибка сохранения истории: {e}")
+    
+    def add_to_history(self, role, content):
+        """Добавление сообщения в историю"""
+        self.history.append({"role": role, "content": content})
+        
+        # Обрезаем историю до установленной глубины
+        memory_depth = self.config.getint('settings', 'memory_depth', fallback=5)
+        max_history = memory_depth * 2
+        if len(self.history) > max_history:
+            self.history = self.history[-max_history:]
+        
+        self.save_history()
+    
+    def clear_history(self):
+        """Очистка истории диалога"""
+        self.history = []
+        self.save_history()
+        print("🧹 История диалога очищена")
+    
+    def ask_ai(self, question):
+        """Запрос к ИИ"""
+        try:
+            # Подготавливаем сообщения
+            messages = [
+                {"role": "system", "content": self.config.get('settings', 'system_prompt')}
+            ]
+            
+            # Добавляем историю
+            messages.extend(self.history)
+            
+            # Добавляем текущий вопрос
+            messages.append({"role": "user", "content": question})
+            
+            # Выполняем запрос
+            response = self.client.chat.completions.create(
+                model=self.config.get('api', 'model_name'),
+                messages=messages,
+                temperature=self.config.getfloat('settings', 'temperature', fallback=0.7),
+                max_tokens=self.config.getint('settings', 'max_tokens', fallback=1024)
+            )
+            
+            answer = response.choices[0].message.content.strip()
+            return answer
+            
+        except openai.APIError as e:
+            return f"❌ Ошибка API: {e}"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    
+    def print_response(self, question, answer):
+        """Форматированный вывод ответа"""
+        try:
+            terminal_width = min(80, os.get_terminal_size().columns)
+        except:
+            terminal_width = 80
+        
+        separator = "=" * (terminal_width - 2)
+        
+        print(f"\n/{separator}")
+        print(f"| 🔜 Вопрос: {question}")
+        print(f"| {separator}")
+        
+        # Разбиваем ответ на строки
+        lines = []
+        current_line = ""
+        for word in answer.split():
+            if len(current_line) + len(word) + 1 <= terminal_width - 8:  # 8 для "| 🔙 " и пробелов
+                current_line += " " + word if current_line else word
+            else:
+                if current_line:
+                    lines.append(current_line)
+                current_line = word
+        
+        if current_line:
+            lines.append(current_line)
+        
+        for line in lines:
+            print(f"| 🔙 {line}")
+        
+        print(f"| {separator}\n")
+    
+    def interactive_mode(self):
+        """Интерактивный режим"""
+        print("🤖 ИИ-ассистент готов. Для выхода введите 'quit', 'exit' или 'выход'")
+        print("Для очистки истории введите 'clear'")
+        
+        while True:
+            try:
+                question = input("❓ Ваш вопрос: ").strip()
+                
+                if question.lower() in ['quit', 'exit', 'выход']:
+                    print("👋 До свидания!")
+                    break
+                elif question.lower() == 'clear':
+                    self.clear_history()
+                    continue
+                elif not question:
+                    continue
+                
+                print("⏳ Обрабатываю запрос...")
+                answer = self.ask_ai(question)
+                
+                if answer.startswith("❌"):
+                    print(answer)
+                else:
+                    self.print_response(question, answer)
+                    self.add_to_history("user", question)
+                    self.add_to_history("assistant", answer)
+                    
+            except KeyboardInterrupt:
+                print("\n👋 До свидания!")
+                break
+            except EOFError:
+                print("\n👋 До свидания!")
+                break
+    
+    def single_question(self, question):
+        """Режим одного вопроса"""
+        print("⏳ Обрабатываю запрос...")
+        answer = self.ask_ai(question)
+        
+        if answer.startswith("❌"):
+            print(answer)
+            sys.exit(1)
+        else:
+            self.print_response(question, answer)
+            self.add_to_history("user", question)
+            self.add_to_history("assistant", answer)
+
+def show_help():
+    """Показать справку"""
+    print("""🤖 ИИ-ассистент для терминала
+
+Использование:
+  ai-terminal [вопрос]    - Задать вопрос ИИ
+  ai-terminal             - Интерактивный режим
+  ai-terminal --config    - Показать путь к конфигу
+  ai-terminal --reset     - Сбросить историю диалога
+  ai-terminal --help      - Показать эту справку
+
+Конфигурация:
+  Файл конфигурации: ~/.config/ai-terminal.conf
+  Получите API ключ на: https://cloud.io.net/
+""")
+
+def main():
+    if len(sys.argv) > 1:
+        arg = sys.argv[1]
+        
+        if arg in ['--help', '-h']:
+            show_help()
+            return
+        elif arg == '--config':
+            config_file = Path.home() / ".config" / "ai-terminal.conf"
+            history_file = Path.home() / ".config" / "ai-terminal-history.json"
+            print(f"📁 Конфиг: {config_file}")
+            print(f"📁 История: {history_file}")
+            return
+        elif arg == '--reset':
+            history_file = Path.home() / ".config" / "ai-terminal-history.json"
+            if history_file.exists():
+                history_file.unlink()
+                print("🧹 История диалога очищена")
+            else:
+                print("ℹ️ История диалога уже пуста")
+            return
+        elif arg.startswith('-'):
+            print(f"❌ Неизвестный аргумент: {arg}")
+            show_help()
+            return
+    
+    try:
+        assistant = AITerminal()
+        
+        if len(sys.argv) > 1:
+            # Режим одного вопроса
+            question = " ".join(sys.argv[1:])
+            assistant.single_question(question)
+        else:
+            # Интерактивный режим
+            assistant.interactive_mode()
+            
+    except KeyboardInterrupt:
+        print("\n👋 До свидания!")
+    except Exception as e:
+        print(f"❌ Критическая ошибка: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
