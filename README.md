@@ -16,7 +16,7 @@ curl -O https://raw.githubusercontent.com/hairpin01/ai-terminal/refs/heads/main/
 обязательно поставь в `api_key` свой ключик с io.net
 
 > [!WARNING]
-> для ai-terminal-gemini надо самому выставить config
+> для ai-terminal-gemini надо самому выставить config по пути `~/.config/ai-terminal.conf`
 ```
 [api]
 provider = gemini
