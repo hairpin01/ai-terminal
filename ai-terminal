@@ -3,9 +3,12 @@ import os
 import sys
 import json
 import configparser
+import time
+import threading
 from pathlib import Path
 import openai
-import readline  # Для истории ввода в интерактивном режиме
+import readline
+from typing import Optional
 
 class AITerminal:
     def __init__(self):
@@ -15,6 +18,7 @@ class AITerminal:
         self.config = None
         self.history = []
         self.client = None
+        self._stop_typing = False
         
         self.setup_config()
         self.setup_client()
@@ -24,17 +28,17 @@ class AITerminal:
         """Создание и загрузка конфигурации"""
         if not self.config_file.exists():
             self.create_default_config()
-            print(f"📁 Конфиг создан: {self.config_file}")
-            print("🔑 Пожалуйста, установите ваш API ключ в конфигурационном файле")
+            self.print_colored("📁 Конфиг создан: ", "blue", end="")
+            print(f"{self.config_file}")
+            self.print_colored("🔑 Пожалуйста, установите ваш API ключ в конфигурационном файле", "yellow")
             sys.exit(1)
         
         self.config = configparser.ConfigParser()
         self.config.read(self.config_file)
         
-        # Проверяем API ключ
         api_key = self.config.get('api', 'api_key', fallback='YOUR_API_KEY_HERE')
         if api_key == 'YOUR_API_KEY_HERE':
-            print("❌ Пожалуйста, установите ваш API ключ в конфигурационном файле")
+            self.print_colored("❌ Пожалуйста, установите ваш API ключ в конфигурационном файле", "red")
             sys.exit(1)
     
     def create_default_config(self):
@@ -51,7 +55,9 @@ class AITerminal:
             'system_prompt': 'You are a helpful AI assistant. Provide clear and concise answers in Russian. Be friendly and professional.',
             'temperature': '0.7',
             'max_tokens': '1024',
-            'memory_depth': '5'
+            'memory_depth': '5',
+            'typing_effect': 'true',
+            'typing_speed': '0.01'
         }
         
         with open(self.config_file, 'w') as f:
@@ -65,7 +71,7 @@ class AITerminal:
                 base_url=self.config.get('api', 'base_url')
             )
         except Exception as e:
-            print(f"❌ Ошибка настройки клиента: {e}")
+            self.print_colored(f"❌ Ошибка настройки клиента: {e}", "red")
             sys.exit(1)
     
     def load_history(self):
@@ -78,7 +84,7 @@ class AITerminal:
                 self.history = []
                 self.save_history()
         except Exception as e:
-            print(f"⚠️ Ошибка загрузки истории: {e}")
+            self.print_colored(f"⚠️ Ошибка загрузки истории: {e}", "yellow")
             self.history = []
     
     def save_history(self):
@@ -87,13 +93,12 @@ class AITerminal:
             with open(self.history_file, 'w', encoding='utf-8') as f:
                 json.dump(self.history, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"⚠️ Ошибка сохранения истории: {e}")
+            self.print_colored(f"⚠️ Ошибка сохранения истории: {e}", "yellow")
     
     def add_to_history(self, role, content):
         """Добавление сообщения в историю"""
         self.history.append({"role": role, "content": content})
         
-        # Обрезаем историю до установленной глубины
         memory_depth = self.config.getint('settings', 'memory_depth', fallback=5)
         max_history = memory_depth * 2
         if len(self.history) > max_history:
@@ -105,23 +110,213 @@ class AITerminal:
         """Очистка истории диалога"""
         self.history = []
         self.save_history()
-        print("🧹 История диалога очищена")
+        self.print_colored("🧹 История диалога очищена", "green")
     
-    def ask_ai(self, question):
+    def print_colored(self, text: str, color: str, end: str = "\n"):
+        """Печать цветного текста"""
+        colors = {
+            'red': '\033[91m',
+            'green': '\033[92m',
+            'yellow': '\033[93m',
+            'blue': '\033[94m',
+            'purple': '\033[95m',
+            'cyan': '\033[96m',
+            'white': '\033[97m',
+        }
+        reset = '\033[0m'
+        
+        color_code = colors.get(color, '')
+        print(f"{color_code}{text}{reset}", end=end)
+    
+    def type_effect(self, text: str, delay: float = None):
+        """Эффект печати символов"""
+        if delay is None:
+            delay = self.config.getfloat('settings', 'typing_speed', fallback=0.01)
+        
+        self._stop_typing = False
+        for char in text:
+            if self._stop_typing:
+                print(text[text.index(char):], end='', flush=True)
+                break
+            print(char, end='', flush=True)
+            time.sleep(delay)
+    
+    def stop_typing(self):
+        """Остановка эффекта печати"""
+        self._stop_typing = True
+    
+    def print_header(self):
+        """Печать красивого заголовка"""
+        try:
+            width = min(80, os.get_terminal_size().columns - 2)
+        except:
+            width = 78
+        
+        title = " AI-TERMINAL "
+        title_width = len(title)
+        remaining_width = width - title_width - 6  # 6 для символов рамки
+        
+        left_dashes = "━" * (remaining_width // 2)
+        right_dashes = "━" * (remaining_width - len(left_dashes))
+        
+        self.print_colored("┏━━" + left_dashes + title + right_dashes + "━━┓", "cyan")
+    
+    def print_line(self, text: str = "", prefix: str = "┃", color: str = "white"):
+        """Печать строки в рамке"""
+        try:
+            width = min(80, os.get_terminal_size().columns - 4)
+        except:
+            width = 76
+        
+        if text:
+            # Разбиваем текст на строки
+            lines = []
+            current_line = ""
+            for word in text.split():
+                test_line = current_line + " " + word if current_line else word
+                if len(test_line) <= width:
+                    current_line = test_line
+                else:
+                    if current_line:
+                        lines.append(current_line)
+                    current_line = word
+            if current_line:
+                lines.append(current_line)
+            
+            # Печатаем каждую строку
+            for i, line in enumerate(lines):
+                padding = " " * (width - len(line))
+                prefix_symbol = "❯" if i == 0 else " "
+                self.print_colored(f"{prefix} {prefix_symbol} {line}{padding} {prefix}", color)
+        else:
+            # Пустая строка
+            padding = " " * (width + 4)
+            self.print_colored(f"{prefix}{padding}{prefix}", color)
+    
+    def print_separator(self):
+        """Печать разделителя"""
+        try:
+            width = min(80, os.get_terminal_size().columns - 4)
+        except:
+            width = 76
+        
+        separator = "━" * (width // 2 - 2) + "━━━━━" + "━" * (width // 2 - 2)
+        self.print_colored(f"┃ {separator} ┃", "cyan")
+    
+    def print_response(self, question: str, answer: str):
+        """Красивый вывод вопроса и ответа"""
+        self.print_header()
+        self.print_line()  # Пустая строка
+        
+        # Вопрос
+        self.print_line(question, color="yellow")
+        self.print_line()  # Пустая строка
+        
+        # Разделитель
+        self.print_separator()
+        self.print_line()  # Пустая строка
+        
+        # Ответ с эффектом печати
+        typing_enabled = self.config.getboolean('settings', 'typing_effect', fallback=True)
+        typing_speed = self.config.getfloat('settings', 'typing_speed', fallback=0.01)
+        
+        if typing_enabled:
+            # Запускаем индикатор загрузки в отдельном потоке
+            loading = threading.Event()
+            loading_thread = threading.Thread(target=self._show_loading, args=(loading,))
+            loading_thread.start()
+            
+            try:
+                # Печатаем ответ с эффектом
+                lines = answer.split('\n')
+                for i, line in enumerate(lines):
+                    if line.strip():
+                        prefix = "┃"
+                        prefix_symbol = "❯" if i == 0 else " "
+                        try:
+                            line_width = min(80, os.get_terminal_size().columns - 8)
+                        except:
+                            line_width = 72
+                        
+                        # Форматируем строку
+                        formatted_lines = []
+                        current_line = ""
+                        for word in line.split():
+                            test_line = current_line + " " + word if current_line else word
+                            if len(test_line) <= line_width:
+                                current_line = test_line
+                            else:
+                                if current_line:
+                                    formatted_lines.append(current_line)
+                                current_line = word
+                        if current_line:
+                            formatted_lines.append(current_line)
+                        
+                        # Печатаем каждую форматированную строку
+                        for j, formatted_line in enumerate(formatted_lines):
+                            if j == 0 and i == 0:
+                                # Первая строка ответа
+                                padding = " " * (line_width - len(formatted_line) + 4)
+                                sys.stdout.write(f"\r┃ {prefix_symbol} {formatted_line}{padding} ┃\n")
+                            else:
+                                padding = " " * (line_width - len(formatted_line) + 6)
+                                sys.stdout.write(f"\r┃   {formatted_line}{padding} ┃\n")
+                            sys.stdout.flush()
+                            time.sleep(typing_speed)
+                
+                # Останавливаем индикатор
+                loading.set()
+                loading_thread.join()
+                
+            except KeyboardInterrupt:
+                loading.set()
+                loading_thread.join()
+                self.stop_typing()
+                print("\n")
+                raise
+        
+        else:
+            # Обычный вывод без эффекта печати
+            self.print_line(answer, color="green")
+        
+        self.print_line()  # Пустая строка
+    
+    def _show_loading(self, stop_event):
+        """Показать анимацию загрузки"""
+        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        i = 0
+        
+        while not stop_event.is_set():
+            try:
+                width = min(80, os.get_terminal_size().columns - 4)
+            except:
+                width = 76
+            
+            padding = " " * (width - 2)
+            sys.stdout.write(f"\r┃ {frames[i]} Обработка запроса{padding} ┃")
+            sys.stdout.flush()
+            time.sleep(0.1)
+            i = (i + 1) % len(frames)
+        
+        # Очищаем строку с анимацией
+        try:
+            width = min(80, os.get_terminal_size().columns - 4)
+        except:
+            width = 76
+        padding = " " * (width + 2)
+        sys.stdout.write(f"\r┃{padding}┃\r")
+        sys.stdout.flush()
+    
+    def ask_ai(self, question: str) -> str:
         """Запрос к ИИ"""
         try:
-            # Подготавливаем сообщения
             messages = [
                 {"role": "system", "content": self.config.get('settings', 'system_prompt')}
             ]
             
-            # Добавляем историю
             messages.extend(self.history)
-            
-            # Добавляем текущий вопрос
             messages.append({"role": "user", "content": question})
             
-            # Выполняем запрос
             response = self.client.chat.completions.create(
                 model=self.config.get('api', 'model_name'),
                 messages=messages,
@@ -137,49 +332,18 @@ class AITerminal:
         except Exception as e:
             return f"❌ Ошибка: {e}"
     
-    def print_response(self, question, answer):
-        """Форматированный вывод ответа"""
-        try:
-            terminal_width = min(80, os.get_terminal_size().columns)
-        except:
-            terminal_width = 80
-        
-        separator = "=" * (terminal_width - 2)
-        
-        print(f"\n/{separator}")
-        print(f"| 🔜 Вопрос: {question}")
-        print(f"| {separator}")
-        
-        # Разбиваем ответ на строки
-        lines = []
-        current_line = ""
-        for word in answer.split():
-            if len(current_line) + len(word) + 1 <= terminal_width - 8:  # 8 для "| 🔙 " и пробелов
-                current_line += " " + word if current_line else word
-            else:
-                if current_line:
-                    lines.append(current_line)
-                current_line = word
-        
-        if current_line:
-            lines.append(current_line)
-        
-        for line in lines:
-            print(f"| 🔙 {line}")
-        
-        print(f"| {separator}\n")
-    
     def interactive_mode(self):
         """Интерактивный режим"""
-        print("🤖 ИИ-ассистент готов. Для выхода введите 'quit', 'exit' или 'выход'")
-        print("Для очистки истории введите 'clear'")
+        self.print_colored("🤖 ИИ-ассистент готов. Для выхода введите 'quit', 'exit' или 'выход'", "cyan")
+        self.print_colored("Для очистки истории введите 'clear'", "cyan")
+        self.print_colored("Для остановки печати нажмите Ctrl+C", "cyan")
         
         while True:
             try:
-                question = input("❓ Ваш вопрос: ").strip()
+                question = input("\n❓ Ваш вопрос: ").strip()
                 
                 if question.lower() in ['quit', 'exit', 'выход']:
-                    print("👋 До свидания!")
+                    self.print_colored("👋 До свидания!", "green")
                     break
                 elif question.lower() == 'clear':
                     self.clear_history()
@@ -187,30 +351,28 @@ class AITerminal:
                 elif not question:
                     continue
                 
-                print("⏳ Обрабатываю запрос...")
                 answer = self.ask_ai(question)
                 
                 if answer.startswith("❌"):
-                    print(answer)
+                    self.print_colored(answer, "red")
                 else:
                     self.print_response(question, answer)
                     self.add_to_history("user", question)
                     self.add_to_history("assistant", answer)
                     
             except KeyboardInterrupt:
-                print("\n👋 До свидания!")
+                self.print_colored("\n👋 До свидания!", "green")
                 break
             except EOFError:
-                print("\n👋 До свидания!")
+                self.print_colored("\n👋 До свидания!", "green")
                 break
     
-    def single_question(self, question):
+    def single_question(self, question: str):
         """Режим одного вопроса"""
-        print("⏳ Обрабатываю запрос...")
         answer = self.ask_ai(question)
         
         if answer.startswith("❌"):
-            print(answer)
+            self.print_colored(answer, "red")
             sys.exit(1)
         else:
             self.print_response(question, answer)
@@ -263,11 +425,9 @@ def main():
         assistant = AITerminal()
         
         if len(sys.argv) > 1:
-            # Режим одного вопроса
             question = " ".join(sys.argv[1:])
             assistant.single_question(question)
         else:
-            # Интерактивный режим
             assistant.interactive_mode()
             
     except KeyboardInterrupt:
