@@ -1,0 +1,444 @@
+#!/usr/bin/env python3
+import os
+import sys
+import json
+import configparser
+import time
+import threading
+from pathlib import Path
+import readline
+from typing import Optional
+
+try:
+    import google.generativeai as genai
+except ImportError:
+    print("❌ Библиотека google-generativeai не установлена")
+    print("Установите: pip install google-generativeai")
+    sys.exit(1)
+
+class AITerminal:
+    def __init__(self):
+        self.config_dir = Path.home() / ".config"
+        self.config_file = self.config_dir / "ai-terminal.conf"
+        self.history_file = self.config_dir / "ai-terminal-history.json"
+        self.config = None
+        self.history = []
+        self._stop_typing = False
+        
+        self.setup_config()
+        self.setup_client()
+        self.load_history()
+    
+    def setup_config(self):
+        """Создание и загрузка конфигурации"""
+        if not self.config_file.exists():
+            self.create_default_config()
+            self.print_colored("📁 Конфиг создан: ", "blue", end="")
+            print(f"{self.config_file}")
+            self.print_colored("🔑 Пожалуйста, установите ваш API ключ в конфигурационном файле", "yellow")
+            sys.exit(1)
+        
+        self.config = configparser.ConfigParser()
+        self.config.read(self.config_file)
+        
+        api_key = self.config.get('api', 'api_key', fallback='YOUR_API_KEY_HERE')
+        if api_key == 'YOUR_API_KEY_HERE':
+            self.print_colored("❌ Пожалуйста, установите ваш API ключ в конфигурационном файле", "red")
+            sys.exit(1)
+    
+    def create_default_config(self):
+        """Создание конфигурационного файла по умолчанию"""
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        
+        config = configparser.ConfigParser()
+        config['api'] = {
+            'provider': 'gemini',
+            'api_key': 'YOUR_API_KEY_HERE',
+            'model_name': 'gemini-1.5-flash'
+        }
+        config['settings'] = {
+            'system_prompt': 'You are a helpful AI assistant. Provide clear and concise answers in Russian. Be friendly and professional.',
+            'temperature': '0.7',
+            'max_tokens': '1024',
+            'memory_depth': '5',
+            'typing_effect': 'true',
+            'typing_speed': '0.01'
+        }
+        
+        with open(self.config_file, 'w') as f:
+            config.write(f)
+    
+    def setup_client(self):
+        """Настройка клиента Gemini"""
+        try:
+            api_key = self.config.get('api', 'api_key')
+            genai.configure(api_key=api_key)
+        except Exception as e:
+            self.print_colored(f"❌ Ошибка настройки клиента Gemini: {e}", "red")
+            sys.exit(1)
+    
+    def load_history(self):
+        """Загрузка истории диалога"""
+        try:
+            if self.history_file.exists():
+                with open(self.history_file, 'r', encoding='utf-8') as f:
+                    self.history = json.load(f)
+            else:
+                self.history = []
+                self.save_history()
+        except Exception as e:
+            self.print_colored(f"⚠️ Ошибка загрузки истории: {e}", "yellow")
+            self.history = []
+    
+    def save_history(self):
+        """Сохранение истории диалога"""
+        try:
+            with open(self.history_file, 'w', encoding='utf-8') as f:
+                json.dump(self.history, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.print_colored(f"⚠️ Ошибка сохранения истории: {e}", "yellow")
+    
+    def add_to_history(self, role, content):
+        """Добавление сообщения в историю"""
+        self.history.append({"role": role, "content": content})
+        
+        memory_depth = self.config.getint('settings', 'memory_depth', fallback=5)
+        max_history = memory_depth * 2
+        if len(self.history) > max_history:
+            self.history = self.history[-max_history:]
+        
+        self.save_history()
+    
+    def clear_history(self):
+        """Очистка истории диалога"""
+        self.history = []
+        self.save_history()
+        self.print_colored("🧹 История диалога очищена", "green")
+    
+    def print_colored(self, text: str, color: str, end: str = "\n"):
+        """Печать цветного текста"""
+        colors = {
+            'red': '\033[91m',
+            'green': '\033[92m',
+            'yellow': '\033[93m',
+            'blue': '\033[94m',
+            'purple': '\033[95m',
+            'cyan': '\033[96m',
+            'white': '\033[97m',
+        }
+        reset = '\033[0m'
+        
+        color_code = colors.get(color, '')
+        print(f"{color_code}{text}{reset}", end=end)
+    
+    def type_effect(self, text: str, delay: float = None):
+        """Эффект печати символов"""
+        if delay is None:
+            delay = self.config.getfloat('settings', 'typing_speed', fallback=0.01)
+        
+        self._stop_typing = False
+        for char in text:
+            if self._stop_typing:
+                print(text[text.index(char):], end='', flush=True)
+                break
+            print(char, end='', flush=True)
+            time.sleep(delay)
+    
+    def stop_typing(self):
+        """Остановка эффекта печати"""
+        self._stop_typing = True
+    
+    def print_header(self):
+        """Печать красивого заголовка"""
+        try:
+            width = min(80, os.get_terminal_size().columns - 2)
+        except:
+            width = 78
+        
+        title = " AI-TERMINAL "
+        title_width = len(title)
+        remaining_width = width - title_width - 6
+        
+        left_dashes = "━" * (remaining_width // 2)
+        right_dashes = "━" * (remaining_width - len(left_dashes))
+        
+        self.print_colored("┏━━" + left_dashes + title + right_dashes + "━━┓", "cyan")
+    
+    def print_line(self, text: str = "", prefix: str = "┃", color: str = "white"):
+        """Печать строки в рамке"""
+        try:
+            width = min(80, os.get_terminal_size().columns - 4)
+        except:
+            width = 76
+        
+        if text:
+            lines = []
+            current_line = ""
+            for word in text.split():
+                test_line = current_line + " " + word if current_line else word
+                if len(test_line) <= width:
+                    current_line = test_line
+                else:
+                    if current_line:
+                        lines.append(current_line)
+                    current_line = word
+            if current_line:
+                lines.append(current_line)
+            
+            for i, line in enumerate(lines):
+                padding = " " * (width - len(line))
+                prefix_symbol = "❯" if i == 0 else " "
+                self.print_colored(f"{prefix} {prefix_symbol} {line}{padding} {prefix}", color)
+        else:
+            padding = " " * (width + 4)
+            self.print_colored(f"{prefix}{padding}{prefix}", color)
+    
+    def print_separator(self):
+        """Печать разделителя"""
+        try:
+            width = min(80, os.get_terminal_size().columns - 4)
+        except:
+            width = 76
+        
+        separator = "━" * (width // 2 - 2) + "━━━━━" + "━" * (width // 2 - 2)
+        self.print_colored(f"┃ {separator} ┃", "cyan")
+    
+    def print_response(self, question: str, answer: str):
+        """Красивый вывод вопроса и ответа"""
+        self.print_header()
+        self.print_line()
+        
+        # Вопрос
+        self.print_line(question, color="yellow")
+        self.print_line()
+        
+        # Разделитель
+        self.print_separator()
+        self.print_line()
+        
+        # Ответ с эффектом печати
+        typing_enabled = self.config.getboolean('settings', 'typing_effect', fallback=True)
+        typing_speed = self.config.getfloat('settings', 'typing_speed', fallback=0.01)
+        
+        if typing_enabled:
+            loading = threading.Event()
+            loading_thread = threading.Thread(target=self._show_loading, args=(loading,))
+            loading_thread.start()
+            
+            try:
+                lines = answer.split('\n')
+                for i, line in enumerate(lines):
+                    if line.strip():
+                        prefix = "┃"
+                        prefix_symbol = "❯" if i == 0 else " "
+                        try:
+                            line_width = min(80, os.get_terminal_size().columns - 8)
+                        except:
+                            line_width = 72
+                        
+                        formatted_lines = []
+                        current_line = ""
+                        for word in line.split():
+                            test_line = current_line + " " + word if current_line else word
+                            if len(test_line) <= line_width:
+                                current_line = test_line
+                            else:
+                                if current_line:
+                                    formatted_lines.append(current_line)
+                                current_line = word
+                        if current_line:
+                            formatted_lines.append(current_line)
+                        
+                        for j, formatted_line in enumerate(formatted_lines):
+                            if j == 0 and i == 0:
+                                padding = " " * (line_width - len(formatted_line) + 4)
+                                sys.stdout.write(f"\r┃ {prefix_symbol} {formatted_line}{padding} ┃\n")
+                            else:
+                                padding = " " * (line_width - len(formatted_line) + 6)
+                                sys.stdout.write(f"\r┃   {formatted_line}{padding} ┃\n")
+                            sys.stdout.flush()
+                            time.sleep(typing_speed)
+                
+                loading.set()
+                loading_thread.join()
+                
+            except KeyboardInterrupt:
+                loading.set()
+                loading_thread.join()
+                self.stop_typing()
+                print("\n")
+                raise
+        
+        else:
+            self.print_line(answer, color="green")
+        
+        self.print_line()
+    
+    def _show_loading(self, stop_event):
+        """Показать анимацию загрузки"""
+        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        i = 0
+        
+        while not stop_event.is_set():
+            try:
+                width = min(80, os.get_terminal_size().columns - 4)
+            except:
+                width = 76
+            
+            padding = " " * (width - 2)
+            sys.stdout.write(f"\r┃ {frames[i]} Обработка запроса{padding} ┃")
+            sys.stdout.flush()
+            time.sleep(0.1)
+            i = (i + 1) % len(frames)
+        
+        try:
+            width = min(80, os.get_terminal_size().columns - 4)
+        except:
+            width = 76
+        padding = " " * (width + 2)
+        sys.stdout.write(f"\r┃{padding}┃\r")
+        sys.stdout.flush()
+    
+    def ask_ai(self, question: str) -> str:
+        """Запрос к Gemini"""
+        try:
+            model_name = self.config.get('api', 'model_name', fallback='gemini-1.5-flash')
+            model = genai.GenerativeModel(model_name)
+            
+            # Подготавливаем промпт с историей
+            prompt_parts = [self.config.get('settings', 'system_prompt')]
+            
+            # Добавляем историю диалога
+            for msg in self.history:
+                if msg["role"] == "user":
+                    prompt_parts.append(f"User: {msg['content']}")
+                else:
+                    prompt_parts.append(f"Assistant: {msg['content']}")
+            
+            prompt_parts.append(f"User: {question}")
+            prompt_parts.append("Assistant:")
+            
+            full_prompt = "\n".join(prompt_parts)
+            
+            # Настройки генерации
+            generation_config = genai.types.GenerationConfig(
+                temperature=self.config.getfloat('settings', 'temperature', fallback=0.7),
+                max_output_tokens=self.config.getint('settings', 'max_tokens', fallback=1024),
+            )
+            
+            response = model.generate_content(
+                full_prompt,
+                generation_config=generation_config
+            )
+            
+            return response.text
+            
+        except Exception as e:
+            return f"❌ Ошибка Gemini API: {e}"
+    
+    def interactive_mode(self):
+        """Интерактивный режим"""
+        self.print_colored("🤖 ИИ-ассистент готов. Для выхода введите 'quit', 'exit' или 'выход'", "cyan")
+        self.print_colored("Для очистки истории введите 'clear'", "cyan")
+        self.print_colored("Для остановки печати нажмите Ctrl+C", "cyan")
+        
+        while True:
+            try:
+                question = input("\n❓ Ваш вопрос: ").strip()
+                
+                if question.lower() in ['quit', 'exit', 'выход']:
+                    self.print_colored("👋 До свидания!", "green")
+                    break
+                elif question.lower() == 'clear':
+                    self.clear_history()
+                    continue
+                elif not question:
+                    continue
+                
+                answer = self.ask_ai(question)
+                
+                if answer.startswith("❌"):
+                    self.print_colored(answer, "red")
+                else:
+                    self.print_response(question, answer)
+                    self.add_to_history("user", question)
+                    self.add_to_history("assistant", answer)
+                    
+            except KeyboardInterrupt:
+                self.print_colored("\n👋 До свидания!", "green")
+                break
+            except EOFError:
+                self.print_colored("\n👋 До свидания!", "green")
+                break
+    
+    def single_question(self, question: str):
+        """Режим одного вопроса"""
+        answer = self.ask_ai(question)
+        
+        if answer.startswith("❌"):
+            self.print_colored(answer, "red")
+            sys.exit(1)
+        else:
+            self.print_response(question, answer)
+            self.add_to_history("user", question)
+            self.add_to_history("assistant", answer)
+
+def show_help():
+    """Показать справку"""
+    print("""🤖 ИИ-ассистент для терминала (Gemini)
+
+Использование:
+  ai-terminal [вопрос]    - Задать вопрос ИИ
+  ai-terminal             - Интерактивный режим
+  ai-terminal --config    - Показать путь к конфигу
+  ai-terminal --reset     - Сбросить историю диалога
+  ai-terminal --help      - Показать эту справку
+
+Конфигурация:
+  Файл конфигурации: ~/.config/ai-terminal.conf
+  Получите API ключ на: https://aistudio.google.com/
+""")
+
+def main():
+    if len(sys.argv) > 1:
+        arg = sys.argv[1]
+        
+        if arg in ['--help', '-h']:
+            show_help()
+            return
+        elif arg == '--config':
+            config_file = Path.home() / ".config" / "ai-terminal.conf"
+            history_file = Path.home() / ".config" / "ai-terminal-history.json"
+            print(f"📁 Конфиг: {config_file}")
+            print(f"📁 История: {history_file}")
+            return
+        elif arg == '--reset':
+            history_file = Path.home() / ".config" / "ai-terminal-history.json"
+            if history_file.exists():
+                history_file.unlink()
+                print("🧹 История диалога очищена")
+            else:
+                print("ℹ️ История диалога уже пуста")
+            return
+        elif arg.startswith('-'):
+            print(f"❌ Неизвестный аргумент: {arg}")
+            show_help()
+            return
+    
+    try:
+        assistant = AITerminal()
+        
+        if len(sys.argv) > 1:
+            question = " ".join(sys.argv[1:])
+            assistant.single_question(question)
+        else:
+            assistant.interactive_mode()
+            
+    except KeyboardInterrupt:
+        print("\n👋 До свидания!")
+    except Exception as e:
+        print(f"❌ Критическая ошибка: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
