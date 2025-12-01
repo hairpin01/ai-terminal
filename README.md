@@ -3,7 +3,7 @@
 
 ## install
 ```
-curl -O https://raw.githubusercontent.com/hairpin01/ai-terminal/refs/heads/main/install.sh
+curl https://raw.githubusercontent.com/hairpin01/ai-terminal/refs/heads/main/install.sh | bash
 ```
 > [!TIP]
 > или wget `https://raw.githubusercontent.com/hairpin01/ai-terminal/refs/heads/main/install.sh`
