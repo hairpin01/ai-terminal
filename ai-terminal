@@ -95,12 +95,13 @@ class AITerminal:
     
     def add_to_history(self, role, content):
         """Добавление сообщения в историю"""
-        self.history.append({"role": role, "content": content})
-        memory_depth = self.config.getint('settings', 'memory_depth', fallback=5)
-        max_history = memory_depth * 2
-        if len(self.history) > max_history:
-            self.history = self.history[-max_history:]
-        self.save_history()
+        if content:  # Только если контент не пустой
+            self.history.append({"role": role, "content": content})
+            memory_depth = self.config.getint('settings', 'memory_depth', fallback=5)
+            max_history = memory_depth * 2
+            if len(self.history) > max_history:
+                self.history = self.history[-max_history:]
+            self.save_history()
     
     def clear_history(self):
         """Очистка истории диалога"""
@@ -114,7 +115,7 @@ class AITerminal:
         i = 0
         
         while self._spinner_active:
-            print(f'\r{animation_frames[i]} Ожидаю ответа...', end='', flush=True)
+            print(f'\r{animation_frames[i]} Обработка запроса...', end='', flush=True)
             time.sleep(0.1)
             i = (i + 1) % len(animation_frames)
         
@@ -124,7 +125,7 @@ class AITerminal:
     def start_waiting_animation(self):
         """Запуск анимации ожидания"""
         if not self.config.getboolean('settings', 'waiting_animation', fallback=True):
-            return
+            return None
             
         self._spinner_active = True
         animation_thread = threading.Thread(target=self.show_waiting_animation)
@@ -135,81 +136,29 @@ class AITerminal:
     def stop_waiting_animation(self):
         """Остановка анимации ожидания"""
         self._spinner_active = False
-        time.sleep(0.15)  # Даем время на завершение анимации
-    
-    def show_thinking_animation(self):
-        """Анимация 'думания' с несколькими точками"""
-        frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-        i = 0
-        
-        while self._spinner_active:
-            print(f'\r{frames[i]} Обрабатываю запрос...', end='', flush=True)
-            time.sleep(0.1)
-            i = (i + 1) % len(frames)
-        
-        # Очищаем строку после анимации
-        print('\r' + ' ' * 50 + '\r', end='', flush=True)
-    
-    def start_thinking_animation(self):
-        """Запуск анимации думания"""
-        if not self.config.getboolean('settings', 'waiting_animation', fallback=True):
-            return
-            
-        self._spinner_active = True
-        animation_thread = threading.Thread(target=self.show_thinking_animation)
-        animation_thread.daemon = True
-        animation_thread.start()
-        return animation_thread
+        time.sleep(0.15)
     
     def type_with_effect(self, text: str):
-        """Эффект печати по словам без курсора"""
+        """Эффект печати по словам"""
+        if not text:
+            return
+            
         words = text.split(' ')
         typing_speed = self.config.getfloat('settings', 'typing_speed', fallback=0.03)
         
-        # Анимация начала ответа
         print("🤖 ", end='', flush=True)
         
         for word_idx, word in enumerate(words):
             if self._stop_typing:
-                # Выводим оставшиеся слова без эффекта
                 print(' '.join(words[word_idx:]), end='', flush=True)
                 break
             
-            # Выводим слово
             print(word, end='', flush=True)
             
-            # Если это не последнее слово, добавляем пробел
             if word_idx < len(words) - 1:
                 print(' ', end='', flush=True)
             
-            # Небольшая задержка между словами
             time.sleep(typing_speed)
-        
-        print()  # Завершаем строку
-    
-    def type_with_wave_effect(self, text: str):
-        """Эффект печати с волнообразной анимацией"""
-        words = text.split(' ')
-        typing_speed = self.config.getfloat('settings', 'typing_speed', fallback=0.03)
-        
-        print("🤖 ", end='', flush=True)
-        
-        for word_idx, word in enumerate(words):
-            if self._stop_typing:
-                print(' '.join(words[word_idx:]), end='', flush=True)
-                break
-            
-            # Печатаем слово посимвольно с разной скоростью для эффекта волны
-            for i, char in enumerate(word):
-                print(char, end='', flush=True)
-                # Меняем скорость для эффекта волны
-                wave_speed = typing_speed * (0.8 + 0.4 * (i % 3) / 2)
-                time.sleep(wave_speed)
-            
-            # Пробел между словами
-            if word_idx < len(words) - 1:
-                print(' ', end='', flush=True)
-                time.sleep(typing_speed * 1.5)  # Немного дольше пауза между словами
         
         print()
     
@@ -218,7 +167,7 @@ class AITerminal:
         self._stop_typing = True
     
     def ask_ai(self, question: str) -> str:
-        """Запрос к ИИ"""
+        """Запрос к ИИ с обработкой ошибок"""
         try:
             messages = [
                 {"role": "system", "content": self.config.get('settings', 'system_prompt')}
@@ -233,32 +182,52 @@ class AITerminal:
                 max_tokens=self.config.getint('settings', 'max_tokens', fallback=1024)
             )
             
-            return response.choices[0].message.content.strip()
+            # Проверяем, что ответ не пустой
+            if response and response.choices and len(response.choices) > 0:
+                answer = response.choices[0].message.content
+                if answer is not None:
+                    return answer.strip()
+                else:
+                    return "⚠️ Получен пустой ответ от ИИ"
+            else:
+                return "⚠️ Нет ответа от ИИ"
+                
+        except openai.APIError as e:
+            return f"❌ Ошибка API: {str(e)}"
+        except openai.OpenAIError as e:
+            return f"❌ Ошибка OpenAI: {str(e)}"
         except Exception as e:
-            return f"❌ Ошибка: {e}"
+            return f"❌ Неожиданная ошибка: {str(e)}"
     
     def process_question(self, question: str):
         """Обработка вопроса с анимациями"""
-        # Запускаем анимацию ожидания (выберите одну из двух)
-        animation_thread = self.start_waiting_animation()  # или start_thinking_animation()
+        # Запускаем анимацию ожидания
+        animation_thread = self.start_waiting_animation()
         
         try:
             # Получаем ответ
             answer = self.ask_ai(question)
             
-            # Останавливаем анимацию ожидания
+            # Останавливаем анимацию
             self.stop_waiting_animation()
             if animation_thread and animation_thread.is_alive():
                 animation_thread.join(timeout=0.5)
+            
+            # Проверяем ответ на ошибки
+            if not answer:
+                print("\n⚠️ Ответ от ИИ пуст")
+                return
+                
+            if answer.startswith("❌") or answer.startswith("⚠️"):
+                print(f"\n{answer}")
+                return
             
             # Выводим ответ с эффектом печати
             typing_enabled = self.config.getboolean('settings', 'typing_effect', fallback=True)
             
             if typing_enabled:
                 try:
-                    # Выберите эффект печати
-                    self.type_with_effect(answer)  # Простой эффект
-                    # или self.type_with_wave_effect(answer)  # Волнообразный эффект
+                    self.type_with_effect(answer)
                 except KeyboardInterrupt:
                     self.stop_typing()
                     print("\n⏹️ Печать остановлена")
@@ -276,7 +245,7 @@ class AITerminal:
             
         except Exception as e:
             self.stop_waiting_animation()
-            print(f"\n❌ Ошибка: {e}")
+            print(f"\n❌ Ошибка при обработке: {str(e)}")
     
     def interactive_mode(self):
         """Интерактивный режим"""
@@ -326,6 +295,7 @@ def show_help():
     print("  ai-terminal --reset     - Сбросить историю")
     print("  ai-terminal --help      - Показать справку")
     print("\nКонфигурация: ~/.config/ai-terminal.conf")
+    print("API ключ можно получить на: https://cloud.io.net/")
 
 def main():
     if len(sys.argv) > 1:
@@ -365,7 +335,7 @@ def main():
     except KeyboardInterrupt:
         print("\n👋 До свидания!")
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print(f"❌ Критическая ошибка: {str(e)}")
         sys.exit(1)
 
 if __name__ == "__main__":
