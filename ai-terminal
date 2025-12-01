@@ -5,10 +5,8 @@ import json
 import configparser
 import time
 import threading
-import asyncio
 from pathlib import Path
 import openai
-from typing import Optional
 
 class AITerminal:
     def __init__(self):
@@ -57,7 +55,8 @@ class AITerminal:
             'max_tokens': '1024',
             'memory_depth': '5',
             'typing_effect': 'true',
-            'typing_speed': '0.05'
+            'typing_speed': '0.03',
+            'waiting_animation': 'true'
         }
         
         with open(self.config_file, 'w') as f:
@@ -109,41 +108,65 @@ class AITerminal:
         self.save_history()
         print("🧹 История очищена")
     
-    def show_spinner_sync(self, message="Думаю"):
-        """Синхронный спиннер во время генерации ответа"""
-        spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+    def show_waiting_animation(self):
+        """Анимация ожидания с символами | / - \"""
+        animation_frames = ['|', '/', '-', '\\']
         i = 0
         
-        print(f"\n{spinner_chars[i]} {message}...", end='', flush=True)
+        while self._spinner_active:
+            print(f'\r{animation_frames[i]} Ожидаю ответа...', end='', flush=True)
+            time.sleep(0.1)
+            i = (i + 1) % len(animation_frames)
+        
+        # Очищаем строку после анимации
+        print('\r' + ' ' * 50 + '\r', end='', flush=True)
+    
+    def start_waiting_animation(self):
+        """Запуск анимации ожидания"""
+        if not self.config.getboolean('settings', 'waiting_animation', fallback=True):
+            return
+            
+        self._spinner_active = True
+        animation_thread = threading.Thread(target=self.show_waiting_animation)
+        animation_thread.daemon = True
+        animation_thread.start()
+        return animation_thread
+    
+    def stop_waiting_animation(self):
+        """Остановка анимации ожидания"""
+        self._spinner_active = False
+        time.sleep(0.15)  # Даем время на завершение анимации
+    
+    def show_thinking_animation(self):
+        """Анимация 'думания' с несколькими точками"""
+        frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+        i = 0
         
         while self._spinner_active:
+            print(f'\r{frames[i]} Обрабатываю запрос...', end='', flush=True)
             time.sleep(0.1)
-            i = (i + 1) % len(spinner_chars)
-            print(f"\r{spinner_chars[i]} {message}...", end='', flush=True)
+            i = (i + 1) % len(frames)
         
-        # Очищаем строку
-        print('\r' + ' ' * (len(message) + 15) + '\r', end='', flush=True)
+        # Очищаем строку после анимации
+        print('\r' + ' ' * 50 + '\r', end='', flush=True)
     
-    def start_spinner(self):
-        """Запуск спиннера в отдельном потоке"""
+    def start_thinking_animation(self):
+        """Запуск анимации думания"""
+        if not self.config.getboolean('settings', 'waiting_animation', fallback=True):
+            return
+            
         self._spinner_active = True
-        spinner_thread = threading.Thread(target=self.show_spinner_sync)
-        spinner_thread.daemon = True
-        spinner_thread.start()
-        return spinner_thread
-    
-    def stop_spinner(self):
-        """Остановка спиннера"""
-        self._spinner_active = False
-        time.sleep(0.1)  # Даем время на завершение
+        animation_thread = threading.Thread(target=self.show_thinking_animation)
+        animation_thread.daemon = True
+        animation_thread.start()
+        return animation_thread
     
     def type_with_effect(self, text: str):
-        """Эффект печати по словам с анимацией"""
+        """Эффект печати по словам без курсора"""
         words = text.split(' ')
-        typing_speed = self.config.getfloat('settings', 'typing_speed', fallback=0.05)
-        cursor_frames = ['|', '/', '–', '\\']
-        cursor_idx = 0
+        typing_speed = self.config.getfloat('settings', 'typing_speed', fallback=0.03)
         
+        # Анимация начала ответа
         print("🤖 ", end='', flush=True)
         
         for word_idx, word in enumerate(words):
@@ -155,24 +178,40 @@ class AITerminal:
             # Выводим слово
             print(word, end='', flush=True)
             
-            # Если это не последнее слово, добавляем пробел и анимацию
+            # Если это не последнее слово, добавляем пробел
             if word_idx < len(words) - 1:
                 print(' ', end='', flush=True)
-                
-                # Показываем анимацию курсора
-                for frame in cursor_frames:
-                    if self._stop_typing:
-                        break
-                    print(f"\b{frame}", end='', flush=True)
-                    time.sleep(typing_speed / len(cursor_frames))
-                    print('\b', end='', flush=True)
-                
-                # Возвращаем курсор на место пробела
-                print('\b', end='', flush=True)
             
+            # Небольшая задержка между словами
             time.sleep(typing_speed)
         
         print()  # Завершаем строку
+    
+    def type_with_wave_effect(self, text: str):
+        """Эффект печати с волнообразной анимацией"""
+        words = text.split(' ')
+        typing_speed = self.config.getfloat('settings', 'typing_speed', fallback=0.03)
+        
+        print("🤖 ", end='', flush=True)
+        
+        for word_idx, word in enumerate(words):
+            if self._stop_typing:
+                print(' '.join(words[word_idx:]), end='', flush=True)
+                break
+            
+            # Печатаем слово посимвольно с разной скоростью для эффекта волны
+            for i, char in enumerate(word):
+                print(char, end='', flush=True)
+                # Меняем скорость для эффекта волны
+                wave_speed = typing_speed * (0.8 + 0.4 * (i % 3) / 2)
+                time.sleep(wave_speed)
+            
+            # Пробел между словами
+            if word_idx < len(words) - 1:
+                print(' ', end='', flush=True)
+                time.sleep(typing_speed * 1.5)  # Немного дольше пауза между словами
+        
+        print()
     
     def stop_typing(self):
         """Остановка эффекта печати"""
@@ -200,24 +239,26 @@ class AITerminal:
     
     def process_question(self, question: str):
         """Обработка вопроса с анимациями"""
-        # Запускаем спиннер
-        spinner_thread = self.start_spinner()
+        # Запускаем анимацию ожидания (выберите одну из двух)
+        animation_thread = self.start_waiting_animation()  # или start_thinking_animation()
         
         try:
             # Получаем ответ
             answer = self.ask_ai(question)
             
-            # Останавливаем спиннер
-            self.stop_spinner()
-            if spinner_thread.is_alive():
-                spinner_thread.join(timeout=0.5)
+            # Останавливаем анимацию ожидания
+            self.stop_waiting_animation()
+            if animation_thread and animation_thread.is_alive():
+                animation_thread.join(timeout=0.5)
             
             # Выводим ответ с эффектом печати
             typing_enabled = self.config.getboolean('settings', 'typing_effect', fallback=True)
             
             if typing_enabled:
                 try:
-                    self.type_with_effect(answer)
+                    # Выберите эффект печати
+                    self.type_with_effect(answer)  # Простой эффект
+                    # или self.type_with_wave_effect(answer)  # Волнообразный эффект
                 except KeyboardInterrupt:
                     self.stop_typing()
                     print("\n⏹️ Печать остановлена")
@@ -228,8 +269,13 @@ class AITerminal:
             self.add_to_history("user", question)
             self.add_to_history("assistant", answer)
             
+        except KeyboardInterrupt:
+            self.stop_waiting_animation()
+            self.stop_typing()
+            print("\n⏹️ Запрос прерван")
+            
         except Exception as e:
-            self.stop_spinner()
+            self.stop_waiting_animation()
             print(f"\n❌ Ошибка: {e}")
     
     def interactive_mode(self):
@@ -255,9 +301,11 @@ class AITerminal:
                     # Запускаем обработку вопроса
                     self.process_question(question)
                     
+                    print()  # Пустая строка между запросами
+                    
                 except KeyboardInterrupt:
+                    self.stop_waiting_animation()
                     self.stop_typing()
-                    self.stop_spinner()
                     print("\n\n👋 До свидания!")
                     break
                     
