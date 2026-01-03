@@ -5,7 +5,10 @@ import json
 import configparser
 import time
 import threading
+import re
+import mimetypes
 from pathlib import Path
+from datetime import datetime
 import openai
 
 class AITerminal:
@@ -18,11 +21,14 @@ class AITerminal:
         self.client = None
         self._stop_typing = False
         self._spinner_active = False
-        
+        self.attached_files = []
+        self.code_blocks_dir = Path.cwd() / "ai_code_blocks"
+        self.code_blocks_dir.mkdir(exist_ok=True)
+
         self.setup_config()
         self.setup_client()
         self.load_history()
-    
+
     def setup_config(self):
         """Создание и загрузка конфигурации"""
         if not self.config_file.exists():
@@ -30,19 +36,19 @@ class AITerminal:
             print(f"📁 Конфиг создан: {self.config_file}")
             print("🔑 Установите API ключ в конфигурационном файле")
             sys.exit(1)
-        
+
         self.config = configparser.ConfigParser()
         self.config.read(self.config_file)
-        
+
         api_key = self.config.get('api', 'api_key', fallback='YOUR_API_KEY_HERE')
         if api_key == 'YOUR_API_KEY_HERE':
             print("❌ Установите API ключ в конфигурационном файле")
             sys.exit(1)
-    
+
     def create_default_config(self):
         """Создание конфигурационного файла по умолчанию"""
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        
+
         config = configparser.ConfigParser()
         config['api'] = {
             'base_url': 'https://api.intelligence.io.solutions/api/v1/',
@@ -50,18 +56,18 @@ class AITerminal:
             'model_name': 'meta-llama/Llama-3.3-70B-Instruct'
         }
         config['settings'] = {
-            'system_prompt': 'Ты полезный AI ассистент. Отвечай ясно и понятно на русском.',
+            'system_prompt': 'Ты полезный AI ассистент. Отвечай ясно и понятно на русском. Не используй markdown форматирование кроме блоков кода с ```. Для длинного кода (больше 100 символов) не показывай его полностью в ответе, а сообщи что код сохранен в файле и укажи его размер. Короткий код можно показывать в блоках ```.',
             'temperature': '0.7',
-            'max_tokens': '1024',
+            'max_tokens': '2048',
             'memory_depth': '5',
             'typing_effect': 'true',
             'typing_speed': '0.03',
             'waiting_animation': 'true'
         }
-        
+
         with open(self.config_file, 'w') as f:
             config.write(f)
-    
+
     def setup_client(self):
         """Настройка клиента OpenAI"""
         try:
@@ -72,7 +78,7 @@ class AITerminal:
         except Exception as e:
             print(f"❌ Ошибка настройки клиента: {e}")
             sys.exit(1)
-    
+
     def load_history(self):
         """Загрузка истории диалога"""
         try:
@@ -84,7 +90,7 @@ class AITerminal:
                 self.save_history()
         except Exception:
             self.history = []
-    
+
     def save_history(self):
         """Сохранение истории диалога"""
         try:
@@ -92,80 +98,164 @@ class AITerminal:
                 json.dump(self.history, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
-    
+
     def add_to_history(self, role, content):
         """Добавление сообщения в историю"""
-        if content:  # Только если контент не пустой
+        if content:
             self.history.append({"role": role, "content": content})
             memory_depth = self.config.getint('settings', 'memory_depth', fallback=5)
             max_history = memory_depth * 2
             if len(self.history) > max_history:
                 self.history = self.history[-max_history:]
             self.save_history()
-    
+
     def clear_history(self):
         """Очистка истории диалога"""
         self.history = []
         self.save_history()
         print("🧹 История очищена")
-    
+
+    def attach_file(self, file_path):
+        """Прикрепление файла"""
+        try:
+            path = Path(file_path)
+            if not path.exists():
+                print(f"❌ Файл не найден: {file_path}")
+                return False
+
+            if path.is_file():
+                with open(path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+
+                file_info = {
+                    'path': str(path),
+                    'name': path.name,
+                    'content': content,
+                    'size': len(content),
+                    'attached_at': datetime.now().isoformat()
+                }
+                self.attached_files.append(file_info)
+                print(f"📎 Прикреплен файл: {path.name} ({len(content)} символов)")
+                return True
+            else:
+                print(f"❌ Это не файл: {file_path}")
+                return False
+
+        except Exception as e:
+            print(f"❌ Ошибка при чтении файла: {e}")
+            return False
+
+    def clear_attached_files(self):
+        """Очистка прикрепленных файлов"""
+        self.attached_files.clear()
+        print("🧹 Прикрепленные файлы очищены")
+
+    def show_attached_files(self):
+        """Показать прикрепленные файлы"""
+        if not self.attached_files:
+            print("📎 Нет прикрепленных файлов")
+            return
+
+        print("📎 Прикрепленные файлы:")
+        for i, file_info in enumerate(self.attached_files, 1):
+            print(f"  {i}. {file_info['name']} ({file_info['size']} символов)")
+
+    def process_code_blocks(self, text):
+        """Обработка и замена длинных блоков кода"""
+        # Регулярное выражение для поиска блоков кода
+        code_block_pattern = r'```(?:\w+)?\n([\s\S]*?)\n```'
+
+        def replace_long_code(match):
+            code_content = match.group(1).strip()
+            if len(code_content) > 100:
+                # Создаем файл для длинного кода
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"ai_code_{timestamp}.txt"
+                filepath = self.code_blocks_dir / filename
+
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(code_content)
+
+                return f"[код ИИ на: {len(code_content)} символов, сохранен в {filename}]"
+            else:
+                # Возвращаем оригинальный блок для короткого кода
+                return match.group(0)
+
+        # Заменяем длинные блоки кода
+        processed_text = re.sub(code_block_pattern, replace_long_code, text)
+        return processed_text
+
+    def build_prompt_with_files(self, question):
+        """Построение промпта с прикрепленными файлами"""
+        if not self.attached_files:
+            return question
+
+        file_contents = []
+        for file_info in self.attached_files:
+            file_content = f"\n\n--- Файл: {file_info['name']} ---\n{file_info['content']}\n--- Конец файла ---"
+            file_contents.append(file_content)
+
+        files_section = "".join(file_contents)
+        full_prompt = f"{question}\n\nПрикрепленные файлы:{files_section}"
+
+        return full_prompt
+
     def show_waiting_animation(self):
         """Анимация ожидания"""
         animation_frames = ['|', '/', '-', '\\']
         i = 0
-        
+
         while self._spinner_active:
             print(f'\r{animation_frames[i]} Обработка запроса...', end='', flush=True)
             time.sleep(0.1)
             i = (i + 1) % len(animation_frames)
-        
-        # Очищаем строку после анимации
+
         print('\r' + ' ' * 50 + '\r', end='', flush=True)
-    
+
     def start_waiting_animation(self):
         """Запуск анимации ожидания"""
         if not self.config.getboolean('settings', 'waiting_animation', fallback=True):
             return None
-            
+
         self._spinner_active = True
         animation_thread = threading.Thread(target=self.show_waiting_animation)
         animation_thread.daemon = True
         animation_thread.start()
         return animation_thread
-    
+
     def stop_waiting_animation(self):
         """Остановка анимации ожидания"""
         self._spinner_active = False
         time.sleep(0.15)
-    
+
     def type_with_effect(self, text: str):
         """Эффект печати по словам"""
         if not text:
             return
-            
+
         words = text.split(' ')
         typing_speed = self.config.getfloat('settings', 'typing_speed', fallback=0.03)
-        
+
         print("🤖 ", end='', flush=True)
-        
+
         for word_idx, word in enumerate(words):
             if self._stop_typing:
                 print(' '.join(words[word_idx:]), end='', flush=True)
                 break
-            
+
             print(word, end='', flush=True)
-            
+
             if word_idx < len(words) - 1:
                 print(' ', end='', flush=True)
-            
+
             time.sleep(typing_speed)
-        
+
         print()
-    
+
     def stop_typing(self):
         """Остановка эффекта печати"""
         self._stop_typing = True
-    
+
     def ask_ai(self, question: str) -> str:
         """Запрос к ИИ с обработкой ошибок"""
         try:
@@ -174,15 +264,14 @@ class AITerminal:
             ]
             messages.extend(self.history)
             messages.append({"role": "user", "content": question})
-            
+
             response = self.client.chat.completions.create(
                 model=self.config.get('api', 'model_name'),
                 messages=messages,
                 temperature=self.config.getfloat('settings', 'temperature', fallback=0.7),
-                max_tokens=self.config.getint('settings', 'max_tokens', fallback=1024)
+                max_tokens=self.config.getint('settings', 'max_tokens', fallback=2048)
             )
-            
-            # Проверяем, что ответ не пустой
+
             if response and response.choices and len(response.choices) > 0:
                 answer = response.choices[0].message.content
                 if answer is not None:
@@ -191,96 +280,137 @@ class AITerminal:
                     return "⚠️ Получен пустой ответ от ИИ"
             else:
                 return "⚠️ Нет ответа от ИИ"
-                
+
         except openai.APIError as e:
             return f"❌ Ошибка API: {str(e)}"
         except openai.OpenAIError as e:
             return f"❌ Ошибка OpenAI: {str(e)}"
         except Exception as e:
             return f"❌ Неожиданная ошибка: {str(e)}"
-    
+
     def process_question(self, question: str):
         """Обработка вопроса с анимациями"""
+        # Добавляем прикрепленные файлы к промпту
+        full_prompt = self.build_prompt_with_files(question)
+
         # Запускаем анимацию ожидания
         animation_thread = self.start_waiting_animation()
-        
+
         try:
             # Получаем ответ
-            answer = self.ask_ai(question)
-            
+            answer = self.ask_ai(full_prompt)
+
             # Останавливаем анимацию
             self.stop_waiting_animation()
             if animation_thread and animation_thread.is_alive():
                 animation_thread.join(timeout=0.5)
-            
+
             # Проверяем ответ на ошибки
             if not answer:
                 print("\n⚠️ Ответ от ИИ пуст")
                 return
-                
+
             if answer.startswith("❌") or answer.startswith("⚠️"):
                 print(f"\n{answer}")
                 return
-            
+
+            # Обрабатываем блоки кода
+            processed_answer = self.process_code_blocks(answer)
+
             # Выводим ответ с эффектом печати
             typing_enabled = self.config.getboolean('settings', 'typing_effect', fallback=True)
-            
+
             if typing_enabled:
                 try:
-                    self.type_with_effect(answer)
+                    self.type_with_effect(processed_answer)
                 except KeyboardInterrupt:
                     self.stop_typing()
                     print("\n⏹️ Печать остановлена")
             else:
-                print(f"\n🤖 {answer}")
-            
+                print(f"\n🤖 {processed_answer}")
+
             # Сохраняем в историю
             self.add_to_history("user", question)
             self.add_to_history("assistant", answer)
-            
+
+            # Очищаем прикрепленные файлы после обработки
+            self.attached_files.clear()
+
         except KeyboardInterrupt:
             self.stop_waiting_animation()
             self.stop_typing()
             print("\n⏹️ Запрос прерван")
-            
+
         except Exception as e:
             self.stop_waiting_animation()
             print(f"\n❌ Ошибка при обработке: {str(e)}")
-    
+
     def interactive_mode(self):
         """Интерактивный режим"""
         print("🤖 AI Terminal готов. Для выхода: quit/exit/выход")
-        print("Для очистки истории: clear")
-        print("Для остановки печати: Ctrl+C\n")
-        
+        print("Доступные команды:")
+        print("  /clear              - очистить историю диалога")
+        print("  /file <путь>        - прикрепить файл")
+        print("  /files              - показать прикрепленные файлы")
+        print("  /clear_files        - очистить прикрепленные файлы")
+        print("  /help               - показать справку по командам")
+        print()
+
         try:
             while True:
                 try:
-                    question = input("==> ").strip()
-                    
-                    if question.lower() in ['quit', 'exit', 'выход']:
+                    user_input = input("==> ").strip()
+
+                    if user_input.lower() in ['quit', 'exit', 'выход']:
                         print("👋 До свидания!")
                         break
-                    elif question.lower() == 'clear':
+                    elif user_input.lower() == '/clear':
                         self.clear_history()
                         continue
-                    elif not question:
+                    elif user_input.lower() == '/clear_files':
+                        self.clear_attached_files()
                         continue
-                    
+                    elif user_input.lower() == '/files':
+                        self.show_attached_files()
+                        continue
+                    elif user_input.lower() == '/help':
+                        print("\n🤖 Доступные команды:")
+                        print("  /clear              - очистить историю диалога")
+                        print("  /file <путь>        - прикрепить файл")
+                        print("  /files              - показать прикрепленные файлы")
+                        print("  /clear_files        - очистить прикрепленные файлы")
+                        print("  /help               - показать справку")
+                        print("  quit/exit/выход     - выйти из программы")
+                        print()
+                        continue
+                    elif user_input.startswith('/file '):
+                        file_path = user_input[6:].strip()
+                        if file_path:
+                            self.attach_file(file_path)
+                        else:
+                            print("❌ Укажите путь к файлу: /file <путь>")
+                        continue
+                    elif user_input.startswith('/'):
+                        print(f"❌ Неизвестная команда: {user_input}")
+                        print("   Используйте /help для списка команд")
+                        continue
+                    elif not user_input:
+                        continue
+
                     # Запускаем обработку вопроса
-                    self.process_question(question)
-                    
+                    self.process_question(user_input)
+
                     print()  # Пустая строка между запросами
-                    
+
                 except KeyboardInterrupt:
                     self.stop_waiting_animation()
                     self.stop_typing()
                     print("\n\n👋 До свидания!")
                     break
-                    
+
         except EOFError:
             print("\n👋 До свидания!")
-    
+
     def single_question(self, question: str):
         """Режим одного вопроса"""
         self.process_question(question)
@@ -289,49 +419,88 @@ def show_help():
     """Показать справку"""
     print("🤖 AI Terminal")
     print("\nИспользование:")
-    print("  ai-terminal [вопрос]    - Задать вопрос")
-    print("  ai-terminal             - Интерактивный режим")
-    print("  ai-terminal --config    - Показать путь к конфигу")
-    print("  ai-terminal --reset     - Сбросить историю")
-    print("  ai-terminal --help      - Показать справку")
+    print("  ai-terminal [вопрос]                    - Задать вопрос")
+    print("  ai-terminal -f файлы -p \"промпт\"       - Прикрепить файлы с промптом")
+    print("  ai-terminal                             - Интерактивный режим")
+    print("  ai-terminal --config                    - Показать путь к конфигу")
+    print("  ai-terminal --clear/--reset             - Сбросить историю")
+    print("  ai-terminal --help                      - Показать справку")
+    print("\nИнтерактивные команды:")
+    print("  /clear              - очистить историю диалога")
+    print("  /file <путь>        - прикрепить файл")
+    print("  /files              - показать прикрепленные файлы")
+    print("  /clear_files        - очистить прикрепленные файлы")
+    print("  /help               - показать справку по командам")
     print("\nКонфигурация: ~/.config/ai-terminal.conf")
     print("API ключ можно получить на: https://cloud.io.net/")
 
 def main():
-    if len(sys.argv) > 1:
-        arg = sys.argv[1]
-        
-        if arg in ['--help', '-h']:
-            show_help()
-            return
-        elif arg == '--config':
-            config_file = Path.home() / ".config" / "ai-terminal.conf"
-            history_file = Path.home() / ".config" / "ai-terminal-history.json"
-            print(f"📁 Конфиг: {config_file}")
-            print(f"📁 История: {history_file}")
-            return
-        elif arg == '--reset':
-            history_file = Path.home() / ".config" / "ai-terminal-history.json"
-            if history_file.exists():
-                history_file.unlink()
-                print("🧹 История очищена")
-            else:
-                print("ℹ️ История уже пуста")
-            return
-        elif arg.startswith('-'):
-            print(f"❌ Неизвестный аргумент: {arg}")
-            show_help()
-            return
-    
+    import argparse
+
+    parser = argparse.ArgumentParser(description='🤖 AI Terminal - Интерфейс для работы с ИИ')
+    parser.add_argument('question', nargs='*', help='Вопрос для ИИ')
+    parser.add_argument('-f', '--files', help='Прикрепить файлы (через запятую)')
+    parser.add_argument('-p', '--prompt', help='Промпт для ИИ')
+    parser.add_argument('--config', action='store_true', help='Показать путь к конфигу')
+    parser.add_argument('--clear', '--reset', action='store_true', help='Очистить историю')
+    parser.add_argument('--help-cmd', action='store_true', help='Показать справку')
+
+    # Если нет аргументов или только help
+    if len(sys.argv) == 1 or sys.argv[1] in ['-h', '--help']:
+        show_help()
+        return
+
+    args = parser.parse_args()
+
+    # Обработка флагов
+    if args.config:
+        config_file = Path.home() / ".config" / "ai-terminal.conf"
+        history_file = Path.home() / ".config" / "ai-terminal-history.json"
+        print(f"📁 Конфиг: {config_file}")
+        print(f"📁 История: {history_file}")
+        return
+
+    if args.clear:
+        history_file = Path.home() / ".config" / "ai-terminal-history.json"
+        if history_file.exists():
+            history_file.unlink()
+            print("🧹 История очищена")
+        else:
+            print("ℹ️ История уже пуста")
+        return
+
+    if args.help_cmd:
+        show_help()
+        return
+
     try:
         assistant = AITerminal()
-        
-        if len(sys.argv) > 1:
-            question = " ".join(sys.argv[1:])
+
+        # Обработка прикрепленных файлов из командной строки
+        if args.files and args.prompt:
+            file_list = [f.strip() for f in args.files.split(',')]
+            for file_path in file_list:
+                assistant.attach_file(file_path)
+            question = args.prompt
+            assistant.single_question(question)
+        elif args.files and args.question:
+            # Если есть файлы и вопрос в аргументах
+            file_list = [f.strip() for f in args.files.split(',')]
+            for file_path in file_list:
+                assistant.attach_file(file_path)
+            question = " ".join(args.question)
+            assistant.single_question(question)
+        elif args.prompt:
+            # Только промпт
+            assistant.single_question(args.prompt)
+        elif args.question:
+            # Только вопрос
+            question = " ".join(args.question)
             assistant.single_question(question)
         else:
+            # Интерактивный режим
             assistant.interactive_mode()
-            
+
     except KeyboardInterrupt:
         print("\n👋 До свидания!")
     except Exception as e:
